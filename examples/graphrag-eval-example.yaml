@@ -1,0 +1,193 @@
+# GraphRAG and Evals Example Workflow
+# Demonstrates knowledge graph RAG and automated evaluation
+
+id: graphrag-eval-demo
+name: GraphRAG with Evaluation
+version: 1.0
+
+inputSchema:
+  type: object
+  properties:
+    query:
+      type: string
+      description: Research question
+    document:
+      type: string
+      description: Document to process
+  required: [query, document]
+
+outputSchema:
+  type: object
+  properties:
+    answer:
+      type: string
+    evaluations:
+      type: array
+      items:
+        type: object
+
+graphRags:
+  - id: knowledgeGraph
+    dimension: 1536
+    threshold: 0.7
+    description: Main knowledge graph for research
+
+evals:
+  - scorer: faithfulness
+    threshold: 0.8
+  - scorer: answer-relevancy
+    threshold: 0.7
+  - scorer: hallucination
+    threshold: 0.2
+
+config:
+  cache:
+    enabled: true
+    backend: memory
+    ttl: 3600
+  
+  memory:
+    storage: postgresql
+    connection: ${env.DATABASE_URL}
+    semanticRecall:
+      vectorStore: pgvector
+      embedder: openai/text-embedding-3-small
+
+  observability:
+    provider: langfuse
+    apiKey: ${env.LANGFUSE_API_KEY}
+    enabled: true
+
+steps:
+  # Step 1: Chunk documents
+  - type: documentChunk
+    id: chunks
+    document: ${input.document}
+    strategy: sentence
+    chunkSize: 300
+    chunkOverlap: 30
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 2: Extract metadata
+  - type: documentMetadata
+    id: metadata
+    document: ${input.document}
+    extractors:
+      - title
+      - summary
+      - keywords
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 3: Build and query GraphRAG
+  - type: graphRag
+    id: graphSearch
+    query: ${input.query}
+    chunks: "${steps.chunks.output.chunks}"
+    embeddings: []
+    topK: 10
+    threshold: 0.7
+    randomWalkSteps: 150
+    restartProb: 0.15
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 4: Generate answer with context
+  - type: agent
+    id: answer
+    agent: research-assistant
+    input: |
+      Question: ${input.query}
+      
+      Context from GraphRAG is available in previous steps
+      
+      Provide a comprehensive answer based on the context.
+    memory: true
+    stream: true
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 5: Evaluate faithfulness
+  - type: evals
+    id: faithfulnessCheck
+    scorer: faithfulness
+    outputText: ${steps.answer.output.text}
+    context: "Context from GraphRAG search"
+    threshold: 0.8
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 6: Evaluate hallucination
+  - type: evals
+    id: hallucinationCheck
+    scorer: hallucination
+    outputText: ${steps.answer.output.text}
+    context: "Context from GraphRAG search"
+    threshold: 0.2
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 7: Evaluate answer relevancy
+  - type: evals
+    id: relevancyCheck
+    scorer: answer-relevancy
+    outputText: ${steps.answer.output.text}
+    context: ${input.query}
+    threshold: 0.7
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 8: Save approved answer
+  - type: step
+    id: saveApproved
+    action: saveResponse
+    params:
+      response: ${steps.answer.output.text}
+      destination: console
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 9: Return final result with evaluations
+  - type: map
+    id: finalOutput
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+    mappings:
+      answer:
+        from: step
+        stepId: answer
+        path: text
+      evaluations:
+        value:
+          - scorer: faithfulness
+            score: ${steps.faithfulnessCheck.output.score}
+            passed: ${steps.faithfulnessCheck.output.passed}
+          - scorer: hallucination
+            score: ${steps.hallucinationCheck.output.score}
+            passed: ${steps.hallucinationCheck.output.passed}
+          - scorer: answer-relevancy
+            score: ${steps.relevancyCheck.output.score}
+            passed: ${steps.relevancyCheck.output.passed}
+      sources:
+        from: step
+        stepId: graphSearch
+        path: results

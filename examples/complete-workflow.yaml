@@ -1,0 +1,222 @@
+# Complete Maestro Workflow Example
+# Demonstrates all new features: networks, voice, document processing, suspend/resume
+
+id: complete-demo
+name: Complete Maestro Workflow Demo
+version: 1.0
+
+inputSchema:
+  type: object
+  properties:
+    query:
+      type: string
+      description: Research query
+    document:
+      type: string
+      description: Document to process
+  required: [query, document]
+
+outputSchema:
+  type: object
+  properties:
+    research:
+      type: string
+    audioSummary:
+      type: string
+    approved:
+      type: boolean
+
+networks:
+  - id: researchTeam
+    name: AI Research Network
+    description: Multi-agent system for comprehensive research
+    agents:
+      - name: searcher
+        description: Finds relevant information from sources
+        agent: search-agent
+      - name: analyzer
+        description: Analyzes and synthesizes findings
+        agent: analysis-agent
+      - name: summarizer
+        description: Creates concise summaries
+        agent: summary-agent
+    router: auto
+    maxIterations: 8
+    instructions: |
+      Research the topic thoroughly by delegating to specialized agents.
+      The searcher finds information, the analyzer synthesizes it,
+      and the summarizer creates the final output.
+
+config:
+  agentsDir: "./agents"
+  persistState: true
+  
+  memory:
+    storage: postgresql
+    connection: ${env.DATABASE_URL}
+    semanticRecall:
+      vectorStore: pgvector
+      embedder: openai/text-embedding-3-small
+      topK: 5
+    workingMemory:
+      enabled: true
+      template: |
+        # Research Session
+        Query: {{query}}
+        Key Findings: {{findings}}
+        Sources: {{sources}}
+
+evals:
+  - scorer: faithfulness
+    threshold: 0.8
+  - scorer: answer-relevancy
+    threshold: 0.7
+
+steps:
+  # Step 1: Process input document
+  - type: documentChunk
+    id: docChunks
+    document: ${input.document}
+    strategy: sentence
+    chunkSize: 300
+    chunkOverlap: 30
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 2: Extract metadata
+  - type: documentMetadata
+    id: docMeta
+    document: ${input.document}
+    extractors:
+      - title
+      - summary
+      - keywords
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 3: Store chunks
+  - type: step
+    id: storeVectors
+    action: saveResponse
+    params:
+      response: ${steps.docChunks.output.chunks}
+      destination: memory
+      key: chunks_key
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 4: Use agent network for research
+  - type: network
+    id: research
+    network: researchTeam
+    input: |
+      Research query: ${input.query}
+      Provide a comprehensive analysis.
+    maxIterations: 8
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 5: Convert research to speech
+  - type: tts
+    id: audioSummary
+    text: "Research summary available"
+    voice: alloy
+    provider: openai
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 6: Create draft report with agent
+  - type: agent
+    id: draftReport
+    agent: report-writer
+    input: |
+      Create a formal research report based on the research findings.
+    memory: true
+    threadId: ${input.query}
+    stream: true
+    evals:
+      - faithfulness
+      - answer-relevancy
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 7: Suspend for human review and approval
+  - type: suspend
+    id: review
+    prompt: |
+      Please review the research report.
+    waitFor: approval
+    timeout: 172800000
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+    resumeSchema:
+      type: object
+      properties:
+        approved:
+          type: boolean
+        feedback:
+          type: string
+
+  # Step 8: Save approved report
+  - type: step
+    id: finalize
+    action: saveResponse
+    params:
+      response: ${steps.draftReport.output.text}
+      destination: console
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 9: Send notification
+  - type: step
+    id: notify
+    action: sendNotification
+    params:
+      channel: slack
+      message: "Report processed for query"
+      priority: normal
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 10: Return final output
+  - type: map
+    id: finalOutput
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+    mappings:
+      research:
+        from: step
+        stepId: research
+        path: result
+      audioSummary:
+        from: step
+        stepId: audioSummary
+        path: audioUrl
+      approved:
+        from: step
+        stepId: review
+        path: data.approved
+      report:
+        from: step
+        stepId: draftReport
+        path: text

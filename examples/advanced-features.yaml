@@ -1,0 +1,193 @@
+# Advanced Maestro Workflow Example
+# Demonstrates MCP, memory, custom tools, and evals
+
+id: advanced-workflow
+name: Advanced Maestro Workflow
+version: 1
+
+inputSchema:
+  type: object
+  properties:
+    query:
+      type: string
+    customerId:
+      type: string
+  required: [query, customerId]
+
+outputSchema:
+  type: object
+  properties:
+    response:
+      type: string
+    sources:
+      type: array
+      items:
+        type: string
+
+config:
+  agentsDir: "./agents"
+  enabledTools: [http, memory]
+  
+  memory:
+    storage: postgresql
+    connection: ${env.DATABASE_URL}
+    semanticRecall:
+      vectorStore: pgvector
+      embedder: openai/text-embedding-3-small
+      topK: 5
+    workingMemory:
+      enabled: true
+
+  mcpServers:
+    brave-search:
+      url: https://api.search.io/mcp
+      apiKey: ${env.BRAVE_API_KEY}
+
+evals:
+  - scorer: faithfulness
+    threshold: 0.8
+  - scorer: toxicity
+    threshold: 0.1
+
+tools:
+  - id: sendInvoice
+    description: Send invoice via Stripe
+    inputSchema:
+      type: object
+      properties:
+        amount:
+          type: number
+        email:
+          type: string
+      required: [amount, email]
+    handler:
+      file: ./tools/invoice.js
+      export: sendInvoice
+
+  - id: validateCoupon
+    description: Validate a coupon code
+    inputSchema:
+      type: object
+      properties:
+        code:
+          type: string
+      required: [code]
+    handler:
+      inline: "return { valid: input.code === 'DISCOUNT20', discount: 0.2 };"
+
+steps:
+  # Step 1: Search for relevant information via MCP
+  - type: mcp
+    id: search
+    server: brave-search
+    tool: web_search
+    input:
+      query: ${input.query}
+    inputSchema:
+      type: object
+      properties:
+        query:
+          type: string
+    outputSchema:
+      type: object
+      properties:
+        results:
+          type: array
+
+  # Step 2: Retrieve customer history from memory
+  - type: agent
+    id: retrieveHistory
+    agent: advanced-support
+    input: "Retrieve conversation history for customer ${input.customerId}"
+    memory: true
+    threadId: ${input.customerId}
+    inputSchema:
+      type: object
+      properties:
+        prompt:
+          type: string
+    outputSchema:
+      type: object
+      properties:
+        history:
+          type: string
+
+  # Step 3: Process query with context (streaming enabled)
+  - type: agent
+    id: processQuery
+    agent: advanced-support
+    input: |
+      Customer query: ${input.query}
+      Search results: ${steps.search.output.results}
+      Customer history: ${steps.retrieveHistory.output.history}
+      Please provide a helpful response.
+    memory: true
+    threadId: ${input.customerId}
+    stream: true
+    evals:
+      - faithfulness
+      - answer-relevancy
+    inputSchema:
+      type: object
+      properties:
+        prompt:
+          type: string
+    outputSchema:
+      type: object
+      properties:
+        text:
+          type: string
+
+  # Step 4: Validate coupon if mentioned
+  - type: tool
+    id: validateCoupon
+    tool: validateCoupon
+    params:
+      code: "DISCOUNT20"
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 5: Save response
+  - type: step
+    id: saveToMemory
+    action: saveResponse
+    params:
+      response: ${steps.processQuery.output.text}
+      destination: memory
+      key: customer_response
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 6: Send notification
+  - type: step
+    id: sendNotification
+    action: sendNotification
+    params:
+      channel: slack
+      message: "Customer received support response"
+      priority: normal
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+
+  # Step 7: Return final result
+  - type: map
+    id: finalOutput
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+    mappings:
+      response:
+        from: step
+        stepId: processQuery
+        path: text
+      sources:
+        from: step
+        stepId: search
+        path: results
