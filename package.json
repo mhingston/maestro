@@ -1,6 +1,6 @@
 {
 	"name": "@mhingston5/maestro",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Write declarative workflows in YAML, run them with Mastra",
 	"type": "module",
 	"main": "dist/index.js",

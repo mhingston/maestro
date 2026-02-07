@@ -69,7 +69,7 @@ You are a helpful support agent. Be concise and friendly.
 
 ```bash
 # Install Maestro
-npm install maestro
+npm install @mhingston5/maestro
 
 # Run workflow
 maestro run --file workflow.yaml --input '{"message":"I need help!"}'
@@ -84,7 +84,7 @@ That's it. Maestro automatically:
 ## Installation
 
 ```bash
-npm install maestro
+npm install @mhingston5/maestro
 ```
 
 ## Built-in Tools
@@ -401,13 +401,13 @@ import {
   loadAgents,
   listBuiltInTools,
   listBuiltInActions,
-} from "maestro";
+} from "@mhingston5/maestro";
 ```
 
 ### Example: Programmatic Usage
 
 ```typescript
-import { compileWorkflowDeclarative } from "maestro";
+import { compileWorkflowDeclarative } from "@mhingston5/maestro";
 
 const { workflow, metadata } = await compileWorkflowDeclarative({
   workflowPath: "./workflow.yaml",
@@ -1041,7 +1041,7 @@ npm test -- src/tests/real-e2e.test.ts
 Test workflows programmatically using `runWorkflowFromString()`:
 
 ```typescript
-import { runWorkflowFromString } from "maestro";
+import { runWorkflowFromString } from "@mhingston5/maestro";
 
 const result = await runWorkflowFromString({
   yaml: `
